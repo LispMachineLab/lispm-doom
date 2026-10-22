@@ -1,0 +1,3 @@
+[submodule "vendor/dsda-doom"]
+	path = vendor/dsda-doom
+	url = https://github.com/dsda-org/dsda-doom.git
