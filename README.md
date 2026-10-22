@@ -18,6 +18,10 @@ window. Each frame goes to Emacs as a file of ARGB32 pixels, two files taking tu
 32 shows as a canvas image (`:file`) and refreshes on each frame the engine announces; the keys
 go back on the engine's standard input. A crash of the engine never takes Emacs with it.
 
+The game draws at Doom's own 320x200, stretched to 4:3 and scaled up to the window a whole number
+of times, at up to 60 frames a second (`lispm-doom-resolution`, `lispm-doom-frame-rate`): Emacs
+on macOS copies a frame's pixels one at a time, about 5 ms a frame at 320x200 but 16 at 640x400.
+
 Emacs tells of keys pressed and repeated, never of keys released: a key counts as held until it
 has not repeated for a moment (`lispm-doom-release-delay`).
 

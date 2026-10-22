@@ -54,6 +54,19 @@
       (should (equal sent '("u 119\n" "d 119\n")))
       (should-not lispm-doom--held))))
 
+(ert-deftest lispm-doom-shows-the-last-frame-told ()
+  (let ((shown nil))
+    (cl-letf (((symbol-function 'lispm-doom--frame) (lambda (index) (push index shown)))
+              ((symbol-function 'lispm-doom--show) (lambda (w h) (push (list w h) shown))))
+      (with-temp-buffer
+        (let ((process (start-process "sleep" nil "sleep" "5")))
+          (unwind-protect
+              (progn
+                (lispm-doom--filter process "lispm-doom frame 0\nlispm-doom frame 1\nlispm-doom fra")
+                (lispm-doom--filter process "me 0\nlispm-doom size 320 240\nlispm-doom frame 1\n")
+                (should (equal (nreverse shown) '(1 0 (320 240) 1))))
+            (delete-process process)))))))
+
 (ert-deftest lispm-doom-engine-names-its-sources ()
   (should (string-match-p "\\`[0-9a-f]\\{16\\}\\'" (lispm-doom-engine-source-version)))
   (should (equal (lispm-doom-engine--target "aarch64-apple-darwin25.0.0") "aarch64-apple-darwin"))
@@ -66,9 +79,15 @@
     (unwind-protect
         (let ((file (lispm-doom--settings-file)))
           (should (string-match-p "videomode +\"OpenGL\"" (with-temp-buffer (insert-file-contents file) (buffer-string))))
-          (with-temp-file file (insert "kept\n"))
-          (lispm-doom--settings-file)
-          (should (equal (with-temp-buffer (insert-file-contents file) (buffer-string)) "kept\n"))
+          (with-temp-file file (insert "kept 1\ndsda_fps_limit 0\n"))
+          (let ((lispm-doom-frame-rate 60))
+            (lispm-doom--settings-file))
+          ;; What the menus changed stays; the frame rate is the option's.
+          (let ((text (with-temp-buffer (insert-file-contents file) (buffer-string))))
+            (should (string-match-p "^kept 1$" text))
+            (should (string-match-p "^dsda_fps_limit +60$" text))
+            (should (string-match-p "^uncapped_framerate +1$" text))
+            (should-not (string-match-p "dsda_fps_limit 0" text)))
           (should (member "-vidmode" (lispm-doom--arguments "/x/doom.wad"))))
       (delete-directory lispm-doom-directory t))))
 
@@ -94,14 +113,16 @@ it quits when told."
             (while (and (< frames 20) (process-live-p process) (< (float-time) deadline))
               (accept-process-output process 0.1))
             (should (>= frames 20))
-            (should (equal (plist-get (cdr lispm-doom--image) :data-width) 640))
-            (should (equal (plist-get (cdr lispm-doom--image) :data-height) 480))
+            ;; Doom's own 320x200, stretched to 4:3, scaled up by Emacs.
+            (should (equal (plist-get (cdr lispm-doom--image) :data-width) 320))
+            (should (equal (plist-get (cdr lispm-doom--image) :data-height) 240))
+            (should (natnump (plist-get (cdr lispm-doom--image) :scale)))
             ;; The frame shown is no black screen.
             (let ((bytes (with-temp-buffer
                            (set-buffer-multibyte nil)
                            (insert-file-contents-literally (plist-get (cdr lispm-doom--image) :file))
                            (buffer-string))))
-              (should (= (length bytes) (* 640 480 4)))
+              (should (= (length bytes) (* 320 240 4)))
               (should (seq-some (lambda (i) (> (aref bytes i) 16)) (number-sequence 0 (1- (length bytes)) 997))))
             (with-current-buffer lispm-doom-buffer-name
               (should (eq (get-text-property (point-min) 'display) nil))

@@ -64,14 +64,23 @@ IWAD file of your own, as doom.wad or doom2.wad."
   :type '(choice (const :tag "Freedoom: Phase 1" nil) file)
   :group 'lispm-doom)
 
-(defcustom lispm-doom-resolution "640x400"
+(defcustom lispm-doom-resolution "320x200"
   "The resolution the game draws at, WIDTHxHEIGHT; 320x200 and 640x400 are
-stretched to 4:3, as on a CRT."
+stretched to 4:3, as on a CRT.  The frames are scaled up to the window, a
+whole number of times.  Emacs on macOS copies a frame's pixels one at a
+time: 320x200, Doom's own, takes it about 5 ms a frame, 640x400 about 16,
+too much of the 28 ms a frame has at 35 a second."
   :type 'string :group 'lispm-doom)
 
 (defcustom lispm-doom-directory (locate-user-emacs-file "lispm-doom/")
   "Where lispm-doom keeps Freedoom, the game's settings and its saves."
   :type 'directory :group 'lispm-doom)
+
+(defcustom lispm-doom-frame-rate 60
+  "How many frames a second the game draws, at most.  35 is Doom's own,
+the rate of its tics; above it, frames are drawn between tics.  Each
+frame shown takes Emacs about 5 ms at 320x200."
+  :type 'natnum :group 'lispm-doom)
 
 (defcustom lispm-doom-arguments nil
   "More arguments for the engine, dsda-doom's, as (\"-nosound\") or
@@ -201,13 +210,30 @@ input_menu_down                 175,115 -1 -1 | 175,115 -1 -1 | 175,115 -1 -1
 Emacs can send, Control and Shift alone being none.  The engine keeps
 what is changed from its menus.")
 
+(defun lispm-doom--setting (key value)
+  "Make the settings in the current buffer set KEY to VALUE, a string."
+  (goto-char (point-min))
+  (if (re-search-forward (concat "^" (regexp-quote key) "[ \t].*$") nil t)
+      (replace-match (format "%-31s %s" key value) t t)
+    (goto-char (point-max))
+    (unless (bolp) (insert "\n"))
+    (insert (format "%-31s %s\n" key value))))
+
 (defun lispm-doom--settings-file ()
-  "Return the engine's settings file, writing it the first time."
-  (let ((file (expand-file-name "lispm-doom.cfg" lispm-doom-directory)))
+  "Return the engine's settings file, writing it the first time; its
+frame rate is `lispm-doom-frame-rate' each time."
+  (let ((file (expand-file-name "lispm-doom.cfg" lispm-doom-directory))
+        (rate (max 1 lispm-doom-frame-rate)))
     (unless (file-exists-p file)
       (make-directory lispm-doom-directory t)
       (with-temp-file file
         (insert lispm-doom-settings)))
+    ;; Unlimited, the engine draws hundreds of frames a second, each one
+    ;; Emacs has to show.
+    (with-temp-file file
+      (insert-file-contents file)
+      (lispm-doom--setting "uncapped_framerate" (if (> rate 35) "1" "0"))
+      (lispm-doom--setting "dsda_fps_limit" (number-to-string rate)))
     file))
 
 (defun lispm-doom--arguments (iwad)
@@ -228,13 +254,33 @@ what is changed from its menus.")
   "Return the file of frame INDEX, 0 or 1."
   (expand-file-name (format "frame-%d.argb" index) lispm-doom--frames))
 
+(defun lispm-doom--scale (width height)
+  "Return how many times frames WIDTH by HEIGHT pixels fit the game's
+window, a whole number, at least 1."
+  (if-let* ((window (get-buffer-window lispm-doom-buffer-name t)))
+      (max 1 (min (/ (window-body-width window t) width)
+                  (/ (- (window-body-height window t) (frame-char-height (window-frame window))) height)))
+    1))
+
+(defun lispm-doom--rescale (&rest _)
+  "Scale the frames to the game's window again, when it changed size."
+  (when lispm-doom--image
+    (let* ((props (cdr lispm-doom--image))
+           (scale (lispm-doom--scale (plist-get props :data-width) (plist-get props :data-height))))
+      (unless (eql scale (plist-get props :scale))
+        ;; The spec itself changes, so that Emacs finds the canvas still.
+        (plist-put props :scale scale)
+        (when-let* ((buffer (get-buffer lispm-doom-buffer-name)))
+          (force-window-update buffer))))))
+
 (defun lispm-doom--show (width height)
   "Show frames WIDTH by HEIGHT pixels in the game's buffer from now on.
 The image's spec is kept as it is, since Emacs finds a canvas by its spec
 itself: each frame only changes the file it names."
   (setq lispm-doom--image (list 'image :type 'canvas :id (make-symbol "lispm-doom")
                                 :data-width width :data-height height
-                                :file (lispm-doom--frame-file 0)))
+                                :file (lispm-doom--frame-file 0)
+                                :scale (lispm-doom--scale width height)))
   (when-let* ((buffer (get-buffer lispm-doom-buffer-name)))
     (with-current-buffer buffer
       (let ((inhibit-read-only t))
@@ -261,11 +307,20 @@ itself: each frame only changes the file it names."
      (lispm-doom--frame (string-to-number index)))))
 
 (defun lispm-doom--filter (process output)
-  "Take OUTPUT of the engine, PROCESS, a line at a time."
-  (let ((lines (split-string (concat (or (process-get process 'pending) "") output) "\n")))
+  "Take OUTPUT of the engine, PROCESS, a line at a time.  Of the frames it
+tells of, only the last is shown: the others are past already."
+  (let ((lines (split-string (concat (or (process-get process 'pending) "") output) "\n"))
+        (frame nil))
     (process-put process 'pending (car (last lines)))
     (dolist (line (butlast lines))
-      (lispm-doom--hear line))))
+      (if (string-prefix-p "lispm-doom frame " line)
+          (setq frame line)
+        (when frame
+          (lispm-doom--hear frame)
+          (setq frame nil))
+        (lispm-doom--hear line)))
+    (when frame
+      (lispm-doom--hear frame))))
 
 (defun lispm-doom--log ()
   "Return the buffer of what the engine prints."
@@ -428,7 +483,8 @@ and C-c C-q.")
   ;; Vim's keys would take the game's.
   (when (fboundp 'evil-set-initial-state)
     (evil-set-initial-state 'lispm-doom-mode 'emacs))
-  (add-hook 'kill-buffer-hook #'lispm-doom--buffer-killed nil t))
+  (add-hook 'kill-buffer-hook #'lispm-doom--buffer-killed nil t)
+  (add-hook 'window-size-change-functions #'lispm-doom--rescale nil t))
 
 ;;;###autoload
 (defun lispm-doom ()
@@ -454,7 +510,8 @@ and C-c C-q.")
     (with-current-buffer buffer
       (unless (derived-mode-p 'lispm-doom-mode)
         (lispm-doom-mode)))
-    (pop-to-buffer-same-window buffer)))
+    (pop-to-buffer-same-window buffer)
+    (lispm-doom--rescale)))
 
 (defun lispm-doom--start (engine iwad)
   "Run ENGINE playing IWAD, its frames shown in the game's buffer; return
