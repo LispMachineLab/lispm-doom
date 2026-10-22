@@ -57,6 +57,9 @@
 (require 'subr-x)
 (require 'lispm-doom-engine)
 
+;; Defined only in an Emacs built with a window system.
+(declare-function image-flush "image.c" (spec &optional frame))
+
 
 (defconst lispm-doom-emacs-version 32
   "The first major version of Emacs lispm-doom runs in.")
