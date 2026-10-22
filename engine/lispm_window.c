@@ -15,11 +15,13 @@
  * renderer (dsda-doom's, OpenGL 2's fixed pipeline) draws in a context
  * made with CGL, OpenGL 2.1's legacy profile, into a framebuffer object
  * standing for the window's: binding framebuffer 0 binds it, and swapping
- * reads it back.  Each frame goes to Emacs as a file of ARGB32 pixels,
- * rows from the top, which Emacs 32 shows as a canvas image (:file); two
- * files take turns, so that Emacs reads one while the next is written:
+ * reads it back.  Each frame goes to Emacs as a PPM file, which Emacs
+ * shows as an image scaled to its window (a canvas image would be
+ * cheaper, but Emacs on macOS drops a canvas's scale whenever it is
+ * refreshed); two files take turns, so that Emacs reads one while the
+ * next is written:
  *
- *   OpenGL --glReadPixels BGRA--> frame-N.argb (mmap) --"frame N"--> Emacs
+ *   OpenGL --glReadPixels BGRA--> frame-N.ppm (mmap) --"frame N"--> Emacs
  *   Emacs  --"d KEY" / "u KEY" on standard input--> D_PostEvent
  *
  * The protocol is lines on standard output starting "lispm-doom ".  The
@@ -65,8 +67,8 @@ static PFNGLBINDFRAMEBUFFEREXTPROC real_bind_framebuffer_ext;
 static PFNGLBINDFRAMEBUFFERPROC real_bind_framebuffer;
 
 static int frame_width, frame_height;
-static uint32_t *frames[2];
-static size_t frame_bytes;
+static unsigned char *frames[2];
+static size_t frame_bytes, frame_header;
 static int frame_next;
 static uint32_t *readback;
 
@@ -111,7 +113,8 @@ void lispm_window_caption(const char *caption)
   say(PROTOCOL "caption %s", caption);
 }
 
-/* The frame files, in LISPM_DOOM_FRAMES, mapped. */
+/* The frame files, in LISPM_DOOM_FRAMES, mapped: PPM, P6, a header and
+   then the rows from the top, three bytes a pixel. */
 
 static void close_frames(void)
 {
@@ -130,6 +133,7 @@ static void close_frames(void)
 static void open_frames(int width, int height)
 {
   const char *directory = getenv("LISPM_DOOM_FRAMES");
+  char header[64];
   int i;
 
   if (!directory)
@@ -137,13 +141,14 @@ static void open_frames(int width, int height)
   close_frames();
   frame_width = width;
   frame_height = height;
-  frame_bytes = (size_t) width * height * 4;
+  frame_header = snprintf(header, sizeof(header), "P6\n%d %d\n255\n", width, height);
+  frame_bytes = frame_header + (size_t) width * height * 3;
   for (i = 0; i < 2; i++)
   {
     char name[4096];
     int fd;
 
-    snprintf(name, sizeof(name), "%s/frame-%d.argb", directory, i);
+    snprintf(name, sizeof(name), "%s/frame-%d.ppm", directory, i);
     fd = open(name, O_RDWR | O_CREAT | O_TRUNC, 0600);
     if (fd < 0 || ftruncate(fd, frame_bytes) < 0)
       I_Error("lispm-doom: %s: %s", name, strerror(errno));
@@ -154,8 +159,9 @@ static void open_frames(int width, int height)
       frames[i] = NULL;
       I_Error("lispm-doom: cannot map %s: %s", name, strerror(errno));
     }
+    memcpy(frames[i], header, frame_header);
   }
-  readback = malloc(frame_bytes);
+  readback = malloc((size_t) width * height * 4);
   if (!readback)
     I_Error("lispm-doom: no memory for a frame");
   frame_next = 0;
@@ -327,46 +333,47 @@ void lispm_window_open_software(int width, int height)
   open_frames(width, height);
 }
 
+/* Write the row FROM, 0xAARRGGBB pixels, as row ROW of the frame being
+   written. */
+static void put_row(int row, const uint32_t *from)
+{
+  unsigned char *to = frames[frame_next] + frame_header + (size_t) row * frame_width * 3;
+  int x;
+
+  for (x = 0; x < frame_width; x++)
+  {
+    uint32_t pixel = from[x];
+
+    to[0] = pixel >> 16;
+    to[1] = pixel >> 8;
+    to[2] = pixel;
+    to += 3;
+  }
+}
+
 void lispm_window_present_gl(void)
 {
-  uint32_t *frame = frames[frame_next];
   int row;
 
-  if (!frame || !context)
+  if (!frames[frame_next] || !context)
     return;
   real_bind_framebuffer_ext(GL_FRAMEBUFFER_EXT, framebuffer);
   glPixelStorei(GL_PACK_ALIGNMENT, 4);
   glReadPixels(0, 0, frame_width, frame_height, GL_BGRA, GL_UNSIGNED_INT_8_8_8_8_REV, readback);
-  /* OpenGL's rows go up from the bottom, the canvas's down from the top;
-     the canvas is opaque. */
+  /* OpenGL's rows go up from the bottom, PPM's down from the top. */
   for (row = 0; row < frame_height; row++)
-  {
-    const uint32_t *from = readback + (size_t) (frame_height - 1 - row) * frame_width;
-    uint32_t *to = frame + (size_t) row * frame_width;
-    int x;
-
-    for (x = 0; x < frame_width; x++)
-      to[x] = from[x] | 0xff000000u;
-  }
+    put_row(row, readback + (size_t) (frame_height - 1 - row) * frame_width);
   hand_over();
 }
 
 void lispm_window_present_pixels(const uint32_t *pixels, int width, int height, int pitch)
 {
-  uint32_t *frame = frames[frame_next];
   int row;
 
-  if (!frame || width != frame_width || height != frame_height)
+  if (!frames[frame_next] || width != frame_width || height != frame_height)
     return;
   for (row = 0; row < height; row++)
-  {
-    const uint32_t *from = (const uint32_t *) ((const char *) pixels + (size_t) row * pitch);
-    uint32_t *to = frame + (size_t) row * width;
-    int x;
-
-    for (x = 0; x < width; x++)
-      to[x] = from[x] | 0xff000000u;
-  }
+    put_row(row, (const uint32_t *) ((const char *) pixels + (size_t) row * pitch));
   hand_over();
 }
 

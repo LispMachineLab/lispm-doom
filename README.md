@@ -1,7 +1,7 @@
 # lispm-doom
 
 Doom in an Emacs buffer, drawn with OpenGL: [dsda-doom](https://github.com/dsda-org/dsda-doom),
-its window an Emacs 32 canvas image, playing [Freedoom](https://freedoom.github.io), with sound
+its window an Emacs buffer, playing [Freedoom](https://freedoom.github.io), with sound
 and music. For [LispM](https://lispm.ai), whose App Store installs it.
 
 `M-x lispm-doom` starts the game. W A S D or the arrows move, Q and E turn, F or J fires, Space
@@ -14,21 +14,23 @@ not in front.
 The engine is dsda-doom 0.30.1 (`vendor/dsda-doom`, a submodule pinned to the release) with its
 SDL window replaced by [engine/](engine/): it runs as a process of Emacs's, and its OpenGL renderer
 draws in a context of OpenGL 2.1's legacy profile into a framebuffer object that stands for the
-window. Each frame goes to Emacs as a file of ARGB32 pixels, two files taking turns, which Emacs
-32 shows as a canvas image (`:file`) and refreshes on each frame the engine announces; the keys
-go back on the engine's standard input. A crash of the engine never takes Emacs with it.
+window. Each frame goes to Emacs as a PPM file, two files taking turns, which Emacs shows as an
+image filling the window and reloads on each frame the engine announces; the keys go back on
+the engine's standard input. A crash of the engine never takes Emacs with it. (A canvas image
+would be cheaper, but Emacs on macOS drops a canvas's scale whenever it is refreshed.)
 
-The game draws at Doom's own 320x200, stretched to 4:3 and scaled up to the window a whole number
-of times, at up to 60 frames a second (`lispm-doom-resolution`, `lispm-doom-frame-rate`): Emacs
-on macOS copies a frame's pixels one at a time, about 5 ms a frame at 320x200 but 16 at 640x400.
+The game draws at Doom's own 320x200, stretched to 4:3 and scaled up to fill the window, at 35
+frames a second (`lispm-doom-resolution`, `lispm-doom-scale`, `lispm-doom-frame-rate`): Emacs on
+macOS copies a frame's pixels one at a time, about 10 ms a frame at 320x200, while scaling costs
+next to nothing.
 
 Emacs tells of keys pressed and repeated, never of keys released: a key counts as held until it
 has not repeated for a moment (`lispm-doom-release-delay`).
 
 ## Emacs 32 only
 
-Emacs 30 and 31 have no canvas images: there `M-x lispm-doom` says so and runs nothing, and
-LispM's App Store lists lispm-doom as needing Emacs 32. LispM's Kernel panel switches LispM to
+In Emacs 30 and 31 `M-x lispm-doom` says it needs Emacs 32 and runs nothing, and LispM's App
+Store lists lispm-doom as needing Emacs 32. LispM's Kernel panel switches LispM to
 Emacs 32, or install the experimental LispM:
 
 ```sh
@@ -49,7 +51,7 @@ Freedoom 0.13.0 is downloaded the first time and checked against its signed chec
 ```sh
 git submodule update --init
 make            # build the engine, build/lispm-doom-engine
-make test       # with LISPM_DOOM_IWAD naming freedoom1.wad, the engine plays into a canvas
+make test       # with LISPM_DOOM_IWAD naming freedoom1.wad, the engine plays into a buffer
 make compile    # byte-compile, warnings failing it
 ```
 

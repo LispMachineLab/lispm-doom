@@ -5,8 +5,8 @@
  *
  * The engine runs as a process of Emacs's.  It draws with OpenGL into a
  * framebuffer of its own, no window anywhere, and hands each frame to
- * Emacs as a file Emacs 32 shows as a canvas image; the keys come back on
- * its standard input.  See lispm_window.c.
+ * Emacs as a PPM file Emacs shows as an image; the keys come back on its
+ * standard input.  See lispm_window.c.
  */
 
 #ifndef LISPM_WINDOW_H

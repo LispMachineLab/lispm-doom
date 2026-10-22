@@ -8,7 +8,7 @@
 ;; On Emacs 30 and 31 these check that lispm-doom refuses, fetching and
 ;; running nothing.  On Emacs 32 they play: the engine CMake built (make)
 ;; with the IWAD LISPM_DOOM_IWAD names, as Freedoom's freedoom1.wad; the
-;; game's frames must reach the canvas.  Without either they are skipped.
+;; game's frames must reach the buffer.  Without either they are skipped.
 
 ;;; Code:
 
@@ -91,8 +91,8 @@
           (should (member "-vidmode" (lispm-doom--arguments "/x/doom.wad"))))
       (delete-directory lispm-doom-directory t))))
 
-(ert-deftest lispm-doom-plays-into-the-canvas ()
-  "The engine starts, draws with OpenGL, and its frames reach the canvas;
+(ert-deftest lispm-doom-plays-into-the-buffer ()
+  "The engine starts, draws with OpenGL, and its frames reach the buffer;
 it quits when told."
   (skip-unless (lispm-doom-supported-p))
   (let* ((lispm-doom-engine-source 'build)
@@ -114,18 +114,18 @@ it quits when told."
               (accept-process-output process 0.1))
             (should (>= frames 20))
             ;; Doom's own 320x200, stretched to 4:3, scaled up by Emacs.
-            (should (equal (plist-get (cdr lispm-doom--image) :data-width) 320))
-            (should (equal (plist-get (cdr lispm-doom--image) :data-height) 240))
-            (should (natnump (plist-get (cdr lispm-doom--image) :scale)))
+            (should (equal lispm-doom--size '(320 . 240)))
+            (should (eq (plist-get (cdr lispm-doom--image) :type) 'pbm))
+            (should (numberp (plist-get (cdr lispm-doom--image) :scale)))
             ;; The frame shown is no black screen.
             (let ((bytes (with-temp-buffer
                            (set-buffer-multibyte nil)
                            (insert-file-contents-literally (plist-get (cdr lispm-doom--image) :file))
                            (buffer-string))))
-              (should (= (length bytes) (* 320 240 4)))
-              (should (seq-some (lambda (i) (> (aref bytes i) 16)) (number-sequence 0 (1- (length bytes)) 997))))
+              (should (string-prefix-p "P6\n320 240\n255\n" bytes))
+              (should (= (length bytes) (+ 15 (* 320 240 3))))
+              (should (seq-some (lambda (i) (> (aref bytes i) 16)) (number-sequence 15 (1- (length bytes)) 997))))
             (with-current-buffer lispm-doom-buffer-name
-              (should (eq (get-text-property (point-min) 'display) nil))
               (should (text-property-any (point-min) (point-max) 'display lispm-doom--image)))
             (lispm-doom-quit)
             ;; Until the sentinel has run, after the process is gone.
