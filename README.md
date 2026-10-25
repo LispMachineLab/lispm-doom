@@ -46,7 +46,12 @@ and `libzip`, which LispM's App Store installs with it. Set `lispm-doom-engine-s
 `build` to build it yourself (CMake, Xcode's command line tools and those formulas).
 
 Freedoom 0.13.0 is downloaded the first time and checked against its signed checksums;
-`lispm-doom-iwad` names another IWAD, as your own `doom.wad`.
+`lispm-doom-iwad` names another IWAD, as your own `doom.wad`. Both downloads happen in the
+background: the game's buffer says so, and the game starts once they are done.
+[lispm-prebuilt](https://github.com/LispMachineLab/lispm-prebuilt) does the downloading, in
+[lispm-kernel](https://github.com/LispMachineLab/lispm-kernel) when it runs; LispM's App Store
+installs it with lispm-doom, and the Makefile finds a checkout of it beside this one
+(`LISPM_PREBUILT=../lispm-prebuilt`).
 
 ```sh
 git submodule update --init
