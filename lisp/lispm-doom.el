@@ -4,7 +4,7 @@
 
 ;; Author: Ryan.K
 ;; Version: 0.1.0
-;; Package-Requires: ((emacs "30.1"))
+;; Package-Requires: ((emacs "30.1") (lispm-prebuilt "0.1.0"))
 ;; Keywords: games
 ;; URL: https://github.com/LispMachineLab/lispm-doom
 ;; SPDX-License-Identifier: AGPL-3.0-or-later
@@ -138,6 +138,9 @@ WADs in it.  Freedoom is under the BSD 3-clause licence, in COPYING.txt.")
 (defvar lispm-doom--stopped nil
   "Non-nil while the engine is stopped.")
 
+(defvar lispm-doom--getting nil
+  "Non-nil while the engine or Freedoom is got for a game to start.")
+
 (defconst lispm-doom-buffer-name "*Doom*"
   "The game's buffer.")
 
@@ -153,7 +156,7 @@ can."
                  lispm-doom-emacs-version emacs-version))
         ((not (image-type-available-p 'pbm))
          "this Emacs shows no PPM images, which the game's frames are")
-        ((not (lispm-doom-engine--target))
+        ((not (lispm-prebuilt-target 'lispm-doom-engine))
          (format "lispm-doom's engine runs on macOS, not on %s" system-configuration))))
 
 (defun lispm-doom-supported-p ()
@@ -172,36 +175,49 @@ can."
     (seq-every-p (lambda (file)
                    (let ((path (expand-file-name (car file) directory)))
                      (and (file-readable-p path)
-                          (or (null (cdr file)) (equal (lispm-doom-engine--sha256 path) (cdr file))))))
+                          (or (null (cdr file)) (equal (lispm-prebuilt-sha256 path) (cdr file))))))
                  (plist-get lispm-doom-freedoom :files))))
 
-(defun lispm-doom-freedoom-ensure ()
-  "Return Freedoom: Phase 1's WAD, downloading Freedoom first, checked
-against its signed checksums, when it is not there."
+(defun lispm-doom-freedoom-get (callback)
+  "Get Freedoom: Phase 1's WAD, then call CALLBACK with it and nil, or with
+nil and why there is none.  When it is not there, Freedoom is downloaded
+first, in the background, Emacs not waiting, and checked against its
+signed checksums."
   (let ((directory (lispm-doom--freedoom-directory)))
-    (unless (lispm-doom--freedoom-complete-p)
-      (unless (and (executable-find "curl") (executable-find "unzip"))
-        (error "Downloading Freedoom needs curl and unzip"))
+    (cond
+     ((lispm-doom--freedoom-complete-p)
+      (funcall callback (expand-file-name "freedoom1.wad" directory) nil))
+     ((not (and (executable-find "curl") (executable-find "unzip")))
+      (funcall callback nil "Downloading Freedoom needs curl and unzip"))
+     (t
       (let* ((temporary (make-temp-file "lispm-doom-freedoom" t))
              (archive (expand-file-name "freedoom.zip" temporary)))
-        (unwind-protect
-            (progn
-              (message "Downloading Freedoom (24 MB)…")
-              (lispm-doom-engine--fetch (plist-get lispm-doom-freedoom :url) archive)
-              (unless (equal (lispm-doom-engine--sha256 archive) (plist-get lispm-doom-freedoom :sha256))
-                (error "The Freedoom downloaded is not Freedoom 0.13.0: its SHA-256 differs, so it was refused"))
-              (make-directory directory t)
-              (unless (zerop (apply #'call-process "unzip" nil nil nil "-o" "-j" archive
-                                    (append (mapcar (lambda (file)
-                                                      (concat (plist-get lispm-doom-freedoom :directory) "/" (car file)))
-                                                    (plist-get lispm-doom-freedoom :files))
-                                            (list "-d" directory))))
-                (error "Freedoom could not be unpacked"))
-              (unless (lispm-doom--freedoom-complete-p)
-                (error "Freedoom's WADs are not the ones its checksums list"))
-              (message "Downloading Freedoom…done"))
-          (delete-directory temporary t))))
-    (expand-file-name "freedoom1.wad" directory)))
+        (cl-flet ((done (why)
+                    (delete-directory temporary t)
+                    (if why
+                        (funcall callback nil why)
+                      (message "Downloading Freedoom…done")
+                      (funcall callback (expand-file-name "freedoom1.wad" directory) nil))))
+          (message "Downloading Freedoom (24 MB)…")
+          (lispm-prebuilt-fetch
+           (plist-get lispm-doom-freedoom :url) archive
+           (lambda (why)
+             (cond
+              (why (done why))
+              ((not (equal (lispm-prebuilt-sha256 archive) (plist-get lispm-doom-freedoom :sha256)))
+               (done "The Freedoom downloaded is not Freedoom 0.13.0: its SHA-256 differs, so it was refused"))
+              (t
+               (make-directory directory t)
+               (lispm-prebuilt-run
+                "unzip" (append (list "-o" "-j" archive)
+                                (mapcar (lambda (file)
+                                          (concat (plist-get lispm-doom-freedoom :directory) "/" (car file)))
+                                        (plist-get lispm-doom-freedoom :files))
+                                (list "-d" directory))
+                (lambda (exit _said)
+                  (done (cond ((not (eql exit 0)) "Freedoom could not be unpacked")
+                              ((not (lispm-doom--freedoom-complete-p))
+                               "Freedoom's WADs are not the ones its checksums list")))))))))))))))
 
 ;;;; The engine's settings
 
@@ -513,30 +529,63 @@ and C-c C-q.")
 
 ;;;###autoload
 (defun lispm-doom ()
-  "Play Doom in a buffer: Freedoom, or `lispm-doom-iwad'."
+  "Play Doom in a buffer: Freedoom, or `lispm-doom-iwad'.
+The engine, and Freedoom, are downloaded first when they are not there,
+in the background: the buffer says so meanwhile, and Emacs does not wait."
   (interactive)
   (when-let* ((reason (lispm-doom-unsupported-reason)))
     (user-error "%s" reason))
   (unless (display-graphic-p)
     (user-error "lispm-doom shows its game on a graphical display only"))
   (let ((buffer (get-buffer-create lispm-doom-buffer-name)))
-    (unless (process-live-p lispm-doom--process)
-      (let ((engine (lispm-doom-engine-ensure))
-            (iwad (or lispm-doom-iwad (lispm-doom-freedoom-ensure))))
-        (unless (file-readable-p iwad)
-          (user-error "No IWAD at %s" iwad))
-        (with-current-buffer buffer
-          (lispm-doom-mode)
-          (let ((inhibit-read-only t))
-            (erase-buffer)
-            (insert "\nStarting Doom…\n")))
-        (lispm-doom--start engine iwad)
-        (setq lispm-doom--watch (run-at-time 0.5 0.5 #'lispm-doom--watch))))
+    (unless (or (process-live-p lispm-doom--process) lispm-doom--getting)
+      (with-current-buffer buffer
+        (lispm-doom-mode)
+        (lispm-doom--say "Starting Doom…"))
+      (setq lispm-doom--getting t)
+      (lispm-doom-engine-get
+       (lambda (engine why)
+         (cond (why (lispm-doom--not-started buffer why))
+               (lispm-doom-iwad (lispm-doom--play buffer engine lispm-doom-iwad))
+               (t (unless (lispm-doom--freedoom-complete-p)
+                    (lispm-doom--say "Downloading Freedoom (24 MB)…" buffer))
+                  (lispm-doom-freedoom-get
+                   (lambda (iwad why)
+                     (if why
+                         (lispm-doom--not-started buffer why)
+                       (lispm-doom--play buffer engine iwad)))))))))
     (with-current-buffer buffer
       (unless (derived-mode-p 'lispm-doom-mode)
         (lispm-doom-mode)))
     (pop-to-buffer-same-window buffer)
     (lispm-doom--rescale)))
+
+(defun lispm-doom--say (text &optional buffer)
+  "Show TEXT alone in the game's BUFFER, by default the current one."
+  (with-current-buffer (or buffer (current-buffer))
+    (let ((inhibit-read-only t))
+      (erase-buffer)
+      (insert "\n" text "\n"))))
+
+(defun lispm-doom--not-started (buffer why)
+  "Say in the game's BUFFER, and in the echo area, WHY the game did not start."
+  (setq lispm-doom--getting nil)
+  (when (buffer-live-p buffer)
+    (lispm-doom--say (format "Doom could not start: %s" why) buffer))
+  (message "Doom could not start: %s" why))
+
+(defun lispm-doom--play (buffer engine iwad)
+  "Start ENGINE playing IWAD in the game's BUFFER, unless it is gone or a
+game runs."
+  (setq lispm-doom--getting nil)
+  (cond ((not (buffer-live-p buffer)))
+        ((process-live-p lispm-doom--process))
+        ((not (file-readable-p iwad))
+         (lispm-doom--not-started buffer (format "no IWAD at %s" iwad)))
+        (t (with-current-buffer buffer
+             (lispm-doom--say "Starting Doom…")
+             (lispm-doom--start engine iwad))
+           (setq lispm-doom--watch (run-at-time 0.5 0.5 #'lispm-doom--watch)))))
 
 (defun lispm-doom--start (engine iwad)
   "Run ENGINE playing IWAD, its frames shown in the game's buffer; return

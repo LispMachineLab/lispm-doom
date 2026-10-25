@@ -1,3 +1,4 @@
 /build/
 /engine/prebuilt/
 *.elc
+/.deps/

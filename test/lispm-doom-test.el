@@ -19,8 +19,8 @@
   (skip-unless (< emacs-major-version 32))
   (should-not (lispm-doom-supported-p))
   (should (string-match-p "needs Emacs 32" (lispm-doom-unsupported-reason)))
-  (cl-letf (((symbol-function 'lispm-doom-engine-ensure) (lambda () (error "The engine was fetched")))
-            ((symbol-function 'lispm-doom-freedoom-ensure) (lambda () (error "Freedoom was fetched")))
+  (cl-letf (((symbol-function 'lispm-prebuilt-get) (lambda (&rest _) (error "The engine was fetched")))
+            ((symbol-function 'lispm-doom-freedoom-get) (lambda (&rest _) (error "Freedoom was fetched")))
             ((symbol-function 'make-process) (lambda (&rest _) (error "Something was run"))))
     (should (string-match-p "needs Emacs 32" (cadr (should-error (lispm-doom) :type 'user-error)))))
   (should-not (get-buffer lispm-doom-buffer-name)))
@@ -69,10 +69,61 @@
 
 (ert-deftest lispm-doom-engine-names-its-sources ()
   (should (string-match-p "\\`[0-9a-f]\\{16\\}\\'" (lispm-doom-engine-source-version)))
-  (should (equal (lispm-doom-engine--target "aarch64-apple-darwin25.0.0") "aarch64-apple-darwin"))
-  (should-not (lispm-doom-engine--target "x86_64-pc-linux-gnu"))
-  (should (equal (lispm-doom-engine--asset "x86_64-apple-darwin") "lispm-doom-engine-x86_64-apple-darwin.tar.gz"))
-  (should (member (expand-file-name "engine/DSDA" lispm-doom-engine-root) (lispm-doom-engine--source-files))))
+  (should (equal (lispm-prebuilt-target 'lispm-doom-engine "aarch64-apple-darwin25.0.0") "aarch64-apple-darwin"))
+  (should-not (lispm-prebuilt-target 'lispm-doom-engine "x86_64-pc-linux-gnu"))
+  (should (equal (lispm-prebuilt-asset 'lispm-doom-engine "x86_64-apple-darwin")
+                 "lispm-doom-engine-x86_64-apple-darwin.tar.gz"))
+  (should (member (expand-file-name "engine/DSDA" lispm-doom-engine-root)
+                  (lispm-prebuilt-source-files 'lispm-doom-engine)))
+  (let ((system-configuration "aarch64-apple-darwin25.0.0"))
+    (should (equal (lispm-prebuilt-prebuilt-file 'lispm-doom-engine)
+                   (expand-file-name (format "engine/prebuilt/%s/lispm-doom-engine" (lispm-doom-engine-source-version))
+                                     lispm-doom-engine-root)))
+    (should (equal (lispm-prebuilt-built-file 'lispm-doom-engine)
+                   (expand-file-name "build/lispm-doom-engine" lispm-doom-engine-root))))
+  ;; Pinned for these sources, for every computer it is published for.
+  (dolist (target lispm-doom-engine-targets)
+    (should (lispm-prebuilt-pinned-sha256 'lispm-doom-engine target))))
+
+(ert-deftest lispm-doom-starts-once-it-has-what-it-needs ()
+  "The game's buffer says Doom is starting while the engine and Freedoom
+come in the background; the game starts once both are there, or the
+buffer says why it did not."
+  (let ((engine-callback nil) (freedoom-callback nil) (started nil)
+        (lispm-doom--getting nil) (lispm-doom--process nil) (lispm-doom-iwad nil)
+        (wad (make-temp-file "lispm-doom-test-wad")))
+    (unwind-protect
+        (cl-letf (((symbol-function 'lispm-doom-unsupported-reason) #'ignore)
+                  ((symbol-function 'display-graphic-p) (lambda (&rest _) t))
+                  ((symbol-function 'lispm-doom-engine-get) (lambda (callback) (setq engine-callback callback)))
+                  ((symbol-function 'lispm-doom--freedoom-complete-p) #'ignore)
+                  ((symbol-function 'lispm-doom-freedoom-get) (lambda (callback) (setq freedoom-callback callback)))
+                  ((symbol-function 'lispm-doom--start) (lambda (engine iwad) (push (list engine iwad) started)))
+                  ((symbol-function 'run-at-time) #'ignore))
+          (lispm-doom)
+          (with-current-buffer lispm-doom-buffer-name
+            (should (string-match-p "Starting Doom" (buffer-string))))
+          ;; Asked again meanwhile: still one start under way.
+          (let ((first engine-callback))
+            (lispm-doom)
+            (should (eq engine-callback first)))
+          (funcall engine-callback "/engine" nil)
+          (with-current-buffer lispm-doom-buffer-name
+            (should (string-match-p "Downloading Freedoom" (buffer-string))))
+          (should-not started)
+          (funcall freedoom-callback wad nil)
+          (should (equal started (list (list "/engine" wad))))
+          (should-not lispm-doom--getting)
+          ;; An engine that cannot be had says why.
+          (lispm-doom)
+          (funcall engine-callback nil "no engine is pinned")
+          (with-current-buffer lispm-doom-buffer-name
+            (should (string-match-p "could not start: no engine is pinned" (buffer-string))))
+          (should-not lispm-doom--getting)
+          (should (= (length started) 1)))
+      (delete-file wad)
+      (when (get-buffer lispm-doom-buffer-name)
+        (kill-buffer lispm-doom-buffer-name)))))
 
 (ert-deftest lispm-doom-writes-its-settings-once ()
   (let ((lispm-doom-directory (make-temp-file "lispm-doom-test" t)))
