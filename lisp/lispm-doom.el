@@ -378,30 +378,14 @@ tells of, only the last is shown: the others are past already."
              (match-string 1))))))
 
 (defun lispm-doom--ended (buffer)
-  "Say in the game's BUFFER that the game has ended, under the frame shown
-last, before the frames go.  The image keeps that frame's pixels, read
-now, instead of naming its file: Emacs keeps no image it failed to load
-but loads it again at each redisplay, and on LispM's desktop the game's
-window then redisplays without end, Emacs answering nothing.  A frame
-that cannot be read goes from the buffer."
+  "Say in the game's BUFFER that the game has ended, in place of its
+frame, before the frames go.  The frame fills the game's window: text
+under it, and point there, would be out of sight, and Emacs, never
+showing point, redisplays the window without end, answering nothing."
+  (setq lispm-doom--image nil)
   (with-current-buffer buffer
-    (let ((inhibit-read-only t)
-          (file (plist-get (cdr lispm-doom--image) :file)))
-      (when file
-        (if (file-readable-p file)
-            ;; The spec itself changes: the buffer's display properties are it.
-            (setcdr lispm-doom--image
-                    (list :type 'pbm
-                          :data (with-temp-buffer
-                                  (set-buffer-multibyte nil)
-                                  (insert-file-contents-literally file)
-                                  (buffer-string))
-                          :scale (plist-get (cdr lispm-doom--image) :scale)))
-          (erase-buffer)))
-      (goto-char (point-max))
-      (insert "\nThe game has ended.  g plays again, q buries this buffer.\n"))
-    (use-local-map lispm-doom-ended-map))
-  (force-window-update buffer))
+    (lispm-doom--say "The game has ended.  g plays again, q buries this buffer.")
+    (use-local-map lispm-doom-ended-map)))
 
 (defun lispm-doom--sentinel (process _event)
   "Clean up once the engine, PROCESS, has ended."
