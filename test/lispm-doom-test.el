@@ -125,6 +125,71 @@ buffer says why it did not."
       (when (get-buffer lispm-doom-buffer-name)
         (kill-buffer lispm-doom-buffer-name)))))
 
+(defun lispm-doom-test--images ()
+  "Return the images the current buffer's display properties hold,
+however deep: the frame, and the space centring it."
+  (let ((images nil) (position (point-min)))
+    (cl-labels ((walk (object)
+                  (cond ((eq (car-safe object) 'image) (push object images))
+                        ((consp object) (walk (car object)) (walk (cdr object))))))
+      (while (< position (point-max))
+        (walk (get-text-property position 'display))
+        (setq position (next-single-property-change position 'display nil (point-max)))))
+    (delete-dups images)))
+
+(defun lispm-doom-test--end (frame)
+  "Play a game whose engine ends at once, as at a demo's end, having told
+of FRAME, its pixels or nil when it wrote none; return the frames'
+directory, gone by then."
+  (let ((frames (make-temp-file "lispm-doom-test-frames" t)))
+    (setq lispm-doom--frames frames)
+    (with-current-buffer (get-buffer-create lispm-doom-buffer-name)
+      (lispm-doom-mode))
+    (lispm-doom--show 2 2)
+    (when frame
+      (let ((coding-system-for-write 'binary))
+        (write-region frame nil (lispm-doom--frame-file 1))))
+    (plist-put (cdr lispm-doom--image) :file (lispm-doom--frame-file 1))
+    (setq lispm-doom--process (make-process :name "lispm-doom-test" :command '("true")
+                                            :noquery t :sentinel #'lispm-doom--sentinel))
+    (let ((deadline (+ (float-time) 10)))
+      (while (and lispm-doom--process (< (float-time) deadline))
+        (accept-process-output nil 0.05)))
+    (should-not lispm-doom--process)
+    frames))
+
+(ert-deftest lispm-doom-keeps-the-last-frame-when-the-engine-ends ()
+  "Once the engine has ended its frames go, and the game's buffer names
+none of their files: Emacs loads an image whose file is gone again at
+each redisplay, which on LispM's desktop never ends.  The frame shown
+last stays, from its pixels; one that cannot be read goes."
+  (let ((lispm-doom--process nil) (lispm-doom--frames nil) (lispm-doom--image nil)
+        (lispm-doom--size nil) (lispm-doom--held nil) (lispm-doom--watch nil)
+        (lispm-doom--stopped nil)
+        (frame (concat "P6\n2 2\n255\n" (apply #'unibyte-string (make-list 12 200))))
+        (frames nil))
+    (unwind-protect
+        (progn
+          (setq frames (lispm-doom-test--end frame))
+          (should-not (file-exists-p frames))
+          (with-current-buffer lispm-doom-buffer-name
+            (should (string-match-p "The game has ended" (buffer-string)))
+            (should (eq (current-local-map) lispm-doom-ended-map))
+            (should (equal (lispm-doom-test--images) (list lispm-doom--image)))
+            (should-not (plist-get (cdr lispm-doom--image) :file))
+            (should (equal (plist-get (cdr lispm-doom--image) :data) frame))
+            (should (eq (plist-get (cdr lispm-doom--image) :type) 'pbm)))
+          ;; An engine that wrote no frame leaves no image.
+          (setq frames (lispm-doom-test--end nil))
+          (should-not (file-exists-p frames))
+          (with-current-buffer lispm-doom-buffer-name
+            (should (string-match-p "The game has ended" (buffer-string)))
+            (should-not (lispm-doom-test--images))))
+      (when (and frames (file-directory-p frames))
+        (delete-directory frames t))
+      (when (get-buffer lispm-doom-buffer-name)
+        (let ((kill-buffer-hook nil)) (kill-buffer lispm-doom-buffer-name))))))
+
 (ert-deftest lispm-doom-writes-its-settings-once ()
   (let ((lispm-doom-directory (make-temp-file "lispm-doom-test" t)))
     (unwind-protect
@@ -184,7 +249,10 @@ it quits when told."
               (while (and lispm-doom--process (< (float-time) deadline))
                 (accept-process-output nil 0.1)))
             (should-not (process-live-p process))
-            (should-not lispm-doom--frames)))
+            (should-not lispm-doom--frames)
+            ;; The last frame stays, from its pixels: its file is gone.
+            (should-not (plist-get (cdr lispm-doom--image) :file))
+            (should (string-prefix-p "P6\n320 240\n255\n" (plist-get (cdr lispm-doom--image) :data)))))
       (when (process-live-p lispm-doom--process)
         (delete-process lispm-doom--process))
       (when (get-buffer lispm-doom-buffer-name)

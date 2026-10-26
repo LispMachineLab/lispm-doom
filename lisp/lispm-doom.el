@@ -377,6 +377,32 @@ tells of, only the last is shown: the others are past already."
             ((re-search-backward "^\\(?:I_Error\\|Error\\): *\\(.+\\)$" nil t)
              (match-string 1))))))
 
+(defun lispm-doom--ended (buffer)
+  "Say in the game's BUFFER that the game has ended, under the frame shown
+last, before the frames go.  The image keeps that frame's pixels, read
+now, instead of naming its file: Emacs keeps no image it failed to load
+but loads it again at each redisplay, and on LispM's desktop the game's
+window then redisplays without end, Emacs answering nothing.  A frame
+that cannot be read goes from the buffer."
+  (with-current-buffer buffer
+    (let ((inhibit-read-only t)
+          (file (plist-get (cdr lispm-doom--image) :file)))
+      (when file
+        (if (file-readable-p file)
+            ;; The spec itself changes: the buffer's display properties are it.
+            (setcdr lispm-doom--image
+                    (list :type 'pbm
+                          :data (with-temp-buffer
+                                  (set-buffer-multibyte nil)
+                                  (insert-file-contents-literally file)
+                                  (buffer-string))
+                          :scale (plist-get (cdr lispm-doom--image) :scale)))
+          (erase-buffer)))
+      (goto-char (point-max))
+      (insert "\nThe game has ended.  g plays again, q buries this buffer.\n"))
+    (use-local-map lispm-doom-ended-map))
+  (force-window-update buffer))
+
 (defun lispm-doom--sentinel (process _event)
   "Clean up once the engine, PROCESS, has ended."
   (unless (process-live-p process)
@@ -386,19 +412,15 @@ tells of, only the last is shown: the others are past already."
       (when (timerp lispm-doom--watch)
         (cancel-timer lispm-doom--watch))
       (setq lispm-doom--watch nil lispm-doom--stopped nil)
+      (when-let* ((buffer (get-buffer lispm-doom-buffer-name)))
+        (lispm-doom--ended buffer))
       (when (and lispm-doom--frames (file-directory-p lispm-doom--frames))
         (delete-directory lispm-doom--frames t))
       (setq lispm-doom--frames nil)
       (let ((status (process-exit-status process)))
         (unless (zerop status)
           (message "lispm-doom ended: %s" (or (lispm-doom--why-ended)
-                                              (format "exit %d; see %s" status (buffer-name (lispm-doom--log)))))))
-      (when-let* ((buffer (get-buffer lispm-doom-buffer-name)))
-        (with-current-buffer buffer
-          (use-local-map lispm-doom-ended-map)
-          (let ((inhibit-read-only t))
-            (goto-char (point-max))
-            (insert "\nThe game has ended.  g plays again, q buries this buffer.\n")))))))
+                                              (format "exit %d; see %s" status (buffer-name (lispm-doom--log))))))))))
 
 ;;;; Keys
 
