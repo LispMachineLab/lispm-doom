@@ -377,6 +377,16 @@ tells of, only the last is shown: the others are past already."
             ((re-search-backward "^\\(?:I_Error\\|Error\\): *\\(.+\\)$" nil t)
              (match-string 1))))))
 
+(defun lispm-doom--ended (buffer)
+  "Say in the game's BUFFER that the game has ended, in place of its
+frame, before the frames go.  The frame fills the game's window: text
+under it, and point there, would be out of sight, and Emacs, never
+showing point, redisplays the window without end, answering nothing."
+  (setq lispm-doom--image nil)
+  (with-current-buffer buffer
+    (lispm-doom--say "The game has ended.  g plays again, q buries this buffer.")
+    (use-local-map lispm-doom-ended-map)))
+
 (defun lispm-doom--sentinel (process _event)
   "Clean up once the engine, PROCESS, has ended."
   (unless (process-live-p process)
@@ -386,19 +396,15 @@ tells of, only the last is shown: the others are past already."
       (when (timerp lispm-doom--watch)
         (cancel-timer lispm-doom--watch))
       (setq lispm-doom--watch nil lispm-doom--stopped nil)
+      (when-let* ((buffer (get-buffer lispm-doom-buffer-name)))
+        (lispm-doom--ended buffer))
       (when (and lispm-doom--frames (file-directory-p lispm-doom--frames))
         (delete-directory lispm-doom--frames t))
       (setq lispm-doom--frames nil)
       (let ((status (process-exit-status process)))
         (unless (zerop status)
           (message "lispm-doom ended: %s" (or (lispm-doom--why-ended)
-                                              (format "exit %d; see %s" status (buffer-name (lispm-doom--log)))))))
-      (when-let* ((buffer (get-buffer lispm-doom-buffer-name)))
-        (with-current-buffer buffer
-          (use-local-map lispm-doom-ended-map)
-          (let ((inhibit-read-only t))
-            (goto-char (point-max))
-            (insert "\nThe game has ended.  g plays again, q buries this buffer.\n")))))))
+                                              (format "exit %d; see %s" status (buffer-name (lispm-doom--log))))))))))
 
 ;;;; Keys
 

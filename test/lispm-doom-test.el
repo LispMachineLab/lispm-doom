@@ -125,6 +125,46 @@ buffer says why it did not."
       (when (get-buffer lispm-doom-buffer-name)
         (kill-buffer lispm-doom-buffer-name)))))
 
+(ert-deftest lispm-doom-says-it-ended-in-place-of-the-frame ()
+  "Once the engine has ended, by itself as at a demo's end, the game's
+buffer says so in place of the frame.  The frame fills the window: text
+under it, and point there, would be out of sight, and Emacs, never
+showing point, redisplays without end.  Nor does the buffer name the
+frames' files, which go."
+  (let ((lispm-doom--process nil) (lispm-doom--image nil) (lispm-doom--size nil)
+        (lispm-doom--held nil) (lispm-doom--watch nil) (lispm-doom--stopped nil)
+        (lispm-doom--frames (make-temp-file "lispm-doom-test-frames" t))
+        (frames nil))
+    (setq frames lispm-doom--frames)
+    (unwind-protect
+        (progn
+          (with-current-buffer (get-buffer-create lispm-doom-buffer-name)
+            (lispm-doom-mode))
+          (lispm-doom--show 2 2)
+          (let ((coding-system-for-write 'binary))
+            (write-region (concat "P6\n2 2\n255\n" (apply #'unibyte-string (make-list 12 200)))
+                          nil (lispm-doom--frame-file 1)))
+          (plist-put (cdr lispm-doom--image) :file (lispm-doom--frame-file 1))
+          (with-current-buffer lispm-doom-buffer-name
+            (should (text-property-not-all (point-min) (point-max) 'display nil)))
+          (setq lispm-doom--process (make-process :name "lispm-doom-test" :command '("true")
+                                                  :noquery t :sentinel #'lispm-doom--sentinel))
+          (let ((deadline (+ (float-time) 10)))
+            (while (and lispm-doom--process (< (float-time) deadline))
+              (accept-process-output nil 0.05)))
+          (should-not lispm-doom--process)
+          (should-not lispm-doom--frames)
+          (should-not (file-exists-p frames))
+          (should-not lispm-doom--image)
+          (with-current-buffer lispm-doom-buffer-name
+            (should (string-match-p "\\`\nThe game has ended\\." (buffer-string)))
+            (should-not (text-property-not-all (point-min) (point-max) 'display nil))
+            (should (eq (current-local-map) lispm-doom-ended-map))))
+      (when (file-directory-p frames)
+        (delete-directory frames t))
+      (when (get-buffer lispm-doom-buffer-name)
+        (let ((kill-buffer-hook nil)) (kill-buffer lispm-doom-buffer-name))))))
+
 (ert-deftest lispm-doom-writes-its-settings-once ()
   (let ((lispm-doom-directory (make-temp-file "lispm-doom-test" t)))
     (unwind-protect
@@ -184,7 +224,12 @@ it quits when told."
               (while (and lispm-doom--process (< (float-time) deadline))
                 (accept-process-output nil 0.1)))
             (should-not (process-live-p process))
-            (should-not lispm-doom--frames)))
+            (should-not lispm-doom--frames)
+            ;; The buffer says so in place of the frame.
+            (should-not lispm-doom--image)
+            (with-current-buffer lispm-doom-buffer-name
+              (should (string-match-p "The game has ended" (buffer-string)))
+              (should-not (text-property-not-all (point-min) (point-max) 'display nil)))))
       (when (process-live-p lispm-doom--process)
         (delete-process lispm-doom--process))
       (when (get-buffer lispm-doom-buffer-name)
