@@ -8,9 +8,9 @@
 #   make check-pins   check the pins against the release
 
 EMACS ?= emacs
-# lispm-prebuilt, which downloads the engine: a checkout beside this one.
-LISPM_PREBUILT ?= ../lispm-prebuilt
-EMACS_BATCH = $(EMACS) -Q --batch -L lisp -L $(LISPM_PREBUILT)
+# lispm-ui (including lispm-prebuilt), which downloads the engine: a checkout beside this one.
+LISPM_UI ?= ../lispm-ui
+EMACS_BATCH = $(EMACS) -Q --batch -L lisp -L $(LISPM_UI)
 
 .PHONY: all engine test compile pin check-pins clean
 
